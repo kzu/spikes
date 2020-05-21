@@ -1,0 +1,4 @@
+[submodule "jsonrpc-exceptions/StreamJsonRpc"]
+	path = jsonrpc-exceptions/StreamJsonRpc
+	url = https://github.com/kzu/vs-streamjsonrpc
+	branch = serialization
