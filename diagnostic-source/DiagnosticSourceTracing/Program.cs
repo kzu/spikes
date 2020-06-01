@@ -6,6 +6,7 @@ namespace DiagnosticSourceTracing
 {
     class Program
     {
+        static readonly DiagnosticSource activitySource = new DiagnosticListener("NewListener");
         static readonly TraceSource trace = new TraceSource("LegacyTraceSource");
 
         static void Main(string[] args)
@@ -20,11 +21,13 @@ namespace DiagnosticSourceTracing
             int count = 0;
             while (true)
             {
+                var activity = activitySource.StartActivity(new Activity($"Processing {count}"), count);
                 trace.TraceEvent(TraceEventType.Information, 1, $"Processing {count}");
                 trace.TraceData(TraceEventType.Verbose, 2, count);
                 Console.WriteLine($"Processing {count}...");
                 Thread.Sleep(1000);
                 count++;
+                activity.Stop();
             }
         }
     }

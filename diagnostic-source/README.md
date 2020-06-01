@@ -36,3 +36,10 @@ The resulting Events view would be something like:
 And the Any Stacks view:
 
 ![AnyStacks view](PerfView-Stacks.png)
+
+When manually collecting traces via PerfView, you can also specify a filter for the specific source:
+
+![Collect filter](PerfView-Filtering.png)
+
+In this case, we used `Microsoft-Diagnostics-DiagnosticSource:::FilterAndPayloadSpecs=LegacyTraceSource` 
+to only collect traces for the given diagnostic source.
