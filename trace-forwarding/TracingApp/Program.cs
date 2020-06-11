@@ -1,31 +1,36 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Diagnostics.Tracing;
 using System.IO;
 using System.Linq;
 using System.Reactive.Linq;
+using System.Reflection;
 using System.Threading;
+using Newtonsoft.Json;
 
 namespace TracingApp
 {
-    class Program
+    partial class Program
     {
+        static bool opened;
         static readonly string LogFile = Path.GetTempFileName();
 
         static void Main(string[] args)
         {
-            List<DiagnosticListener> allListeners = new List<DiagnosticListener>();
-            DiagnosticListener.AllListeners.Subscribe(d => allListeners.Add(d));
+            // The in-proc version of the forwarder
+            var localForwarder = new EventForwarder();
+            localForwarder.EventWritten += (s, e) => WriteEvent(e);
 
-            using var listener = new EventListener();
-            listener.EventSourceCreated += (sender, args) => File.AppendAllText(LogFile, $"EventSourceCreated: {args.EventSource.Name}" + Environment.NewLine);
-            listener.EventWritten += OnEventWritten;
+            var domain = AppDomain.CreateDomain("ComponentDomain");
+            var remote = (Component)domain.CreateInstanceAndUnwrap(Assembly.GetExecutingAssembly().FullName, typeof(Component).FullName);
+            var local = new Component();
 
-            var tracer = new TraceSource("TracingApp-TraceSourced");
-            tracer.Listeners.Add(new DiagnosticSourceTraceListener());
+            var remoteForwarder = (EventForwarder)domain.CreateInstanceAndUnwrap(Assembly.GetExecutingAssembly().FullName, typeof(EventForwarder).FullName);
+            remoteForwarder.EventWritten += (s, e) => WriteEvent(e);
 
-            using var disposable = new Component(tracer).Start();
+
+            using var remoteDisposable = remote.Start();
+            //using var localDisposable = local.Start();
 
             Console.WriteLine("Usage: [+|0][source]");
             Console.WriteLine("Examples:");
@@ -37,58 +42,20 @@ namespace TracingApp
             Console.WriteLine("  -TracingApp-DiagnosticSourced    Disables the DiagnosticSource-based events");
             Console.WriteLine("  -TracingApp-TraceSourced         Disables the TraceSource-based events");
 
-            Console.WriteLine("Opening log file " + LogFile);
-            Process.Start(new ProcessStartInfo("code", LogFile) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
-
-            var allSources = EventSource.GetSources().ToDictionary(source => source.Name);
-            allSources.TryGetValue("Microsoft-Diagnostics-DiagnosticSource", out EventSource? diagSource);
-
             var line = Console.ReadLine();
             while (line.Length > 0)
             {
                 var sourceName = line.Substring(1);
-                allSources.TryGetValue(sourceName, out EventSource? evtSource);
 
                 switch (line[0])
                 {
                     case '+':
-                        if (evtSource != null)
-                        {
-                            listener.EnableEvents(evtSource, EventLevel.Informational);
-                            Console.WriteLine($"Enabled {sourceName} EventSource");
-                        }
-
-                        // For DiagnosticSource, we use the bridge:
-                        if (diagSource != null && 
-                            (allListeners.Any(d => d.Name == sourceName) || sourceName == tracer.Name))
-                        {
-                            listener.EnableEvents(diagSource, EventLevel.Informational, EventKeywords.All, new Dictionary<string, string>
-                            {
-                                { "FilterAndPayloadSpecs", sourceName }
-                            });
-                            Console.WriteLine($"Enabled {sourceName} via {diagSource.Name}");
-                        }
-
-                        if (sourceName == tracer.Name)
-                            tracer.Switch.Level = SourceLevels.Information;
-
+                        localForwarder.Enable(sourceName);
+                        remoteForwarder.Enable(sourceName);
                         break;
                     case '-':
-                        if (evtSource != null)
-                            listener.DisableEvents(evtSource);
-
-                        // NOTE: this will disable it too for other events that are not the one we filtered for
-                        // so unsubscription needs to be more selective (or we need to re-enable the ones we added 
-                        // before again.
-                        if (diagSource != null &&
-                            (allListeners.Any(d => d.Name == sourceName) || sourceName == tracer.Name))
-                        {
-                            listener.DisableEvents(diagSource);
-                        }
-
-                        if (sourceName == tracer.Name)
-                            tracer.Switch.Level = SourceLevels.Off;
-
+                        localForwarder.Disable(sourceName);
+                        remoteForwarder.Disable(sourceName);
                         break;
                     default:
                         break;
@@ -98,31 +65,13 @@ namespace TracingApp
             }
         }
 
-        static void OnEventWritten(object sender, EventWrittenEventArgs args)
+        static void WriteEvent(string payload)
         {
-            // Payload has specific shape for this source
-            if (args.EventSource.Name == "Microsoft-Diagnostics-DiagnosticSource")
-            {
-                // For the DiagnosticSource bridge, we only care about Event events, which are the ones that 
-                // the app has written to the source.
-                if (args.EventId != 2)
-                    return;
+            // NOTE: deserializing directly to the original event args is not really 
+            // possible, since it doesn't have a public constructor, it receives an EventSource, etc.
+            //OnEventWritten(JsonConvert.DeserializeObject<EventWrittenEventArgs>(payload, settings)!);
 
-                var arguments = string.Join(", ",
-                    ((object[])args.Payload[2]).OfType<IDictionary<string, object>>()
-                        .Select(dict => dict["Key"] + "=" + dict["Value"]));
-
-                // The EventId isn't used at all in the DiagnosticSource API
-                WriteLog($"{args.Payload[0]}: {args.Payload[1]}:{arguments}");
-            }
-            else
-            {
-                var message = args.Message;
-                if (!string.IsNullOrEmpty(message) && args.Payload.Count > 0)
-                    message = string.Format(message, args.Payload.ToArray());
-
-                WriteLog($"{args.EventSource.Name}: {args.EventName}:{args.EventId}:{message}");
-            }
+            OnEventWritten(JsonConvert.DeserializeObject<EventWrittenInfo>(payload));
         }
 
         static void WriteLog(string message)
@@ -141,6 +90,40 @@ namespace TracingApp
                 {
                     Thread.Sleep(50);
                 }
+            }
+
+            if (!opened)
+            {
+                opened = true;
+                Console.WriteLine("Opening log file " + LogFile);
+                Process.Start(new ProcessStartInfo("code", LogFile) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
+            }
+        }
+
+        static void OnEventWritten(EventWrittenInfo args)
+        {
+            // Payload has specific shape for this source
+            if (args.EventSource.Name == "Microsoft-Diagnostics-DiagnosticSource")
+            {
+                // For the DiagnosticSource bridge, we only care about Event events, which are the ones that 
+                // the app has written to the source.
+                if (args.EventId != 2)
+                    return;
+
+                var arguments = string.Join(", ",
+                    ((IEnumerable<object>)args.Payload[2]).OfType<IDictionary<string, object>>()
+                        .Select(dict => dict["Key"] + "=" + dict["Value"]));
+
+                // The EventId isn't used at all in the DiagnosticSource API
+                WriteLog($"{args.Payload[0]}: {args.Payload[1]}:{arguments}");
+            }
+            else
+            {
+                var message = args.Message;
+                if (!string.IsNullOrEmpty(message) && args.Payload.Count > 0)
+                    message = string.Format(message, args.Payload.ToArray());
+
+                WriteLog($"{args.EventSource.Name}: {args.EventName}:{args.EventId}:{message}");
             }
         }
     }

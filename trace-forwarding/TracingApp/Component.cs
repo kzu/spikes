@@ -23,12 +23,16 @@ namespace TracingApp
         public const int Tick = 1;
     }
 
-    class Component
+    class Component : MarshalByRefObject
     {
         readonly DiagnosticSource source = new DiagnosticListener("TracingApp-DiagnosticSourced");
         readonly TraceSource tracer;
 
-        public Component(TraceSource tracer) => this.tracer = tracer;
+        public Component()
+        {
+            tracer = new TraceSource("TracingApp-TraceSourced");
+            tracer.Listeners.Add(new DiagnosticSourceTraceListener());
+        }
 
         public IDisposable Start()
         {
@@ -58,7 +62,7 @@ namespace TracingApp
             return new Disposable(cts);
         }
 
-        class Disposable : IDisposable
+        class Disposable : MarshalByRefObject, IDisposable
         {
             readonly CancellationTokenSource cancellation;
 
