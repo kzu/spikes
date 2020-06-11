@@ -51,7 +51,7 @@ namespace TracingApp
                     
                     // DiagnosticSource
                     if (source.IsEnabled(nameof(Events.Tick), watch.Elapsed.Seconds))
-                        source.Write(nameof(Events.Tick), new { Elapsed = watch.Elapsed.Seconds });
+                        source.Write(nameof(Events.Tick), new { Elapsed = watch.Elapsed.Seconds, Time = DateTime.Now });
                     
                     // TraceSource
                     if (tracer.Switch.ShouldTrace(TraceEventType.Information))

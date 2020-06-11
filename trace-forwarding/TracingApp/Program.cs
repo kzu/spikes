@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Dynamic;
 using System.IO;
 using System.Linq;
 using System.Reactive.Linq;
@@ -17,19 +18,25 @@ namespace TracingApp
 
         static void Main(string[] args)
         {
-            // The in-proc version of the forwarder
-            var localForwarder = new EventForwarder();
-            localForwarder.EventWritten += (s, e) => WriteEvent(e);
+            DiagnosticListener.AllListeners
+                .Where(d => d.Name.StartsWith("TracingApp"))
+                .Subscribe(d => d.Subscribe(n => WriteLog($"{n.Key}={JsonConvert.SerializeObject(n.Value)}")));
+
+            var receiver = new EventReceiver(WriteEvent);
 
             var domain = AppDomain.CreateDomain("ComponentDomain");
             var remote = (Component)domain.CreateInstanceAndUnwrap(Assembly.GetExecutingAssembly().FullName, typeof(Component).FullName);
-            var local = new Component();
 
-            var remoteForwarder = (EventForwarder)domain.CreateInstanceAndUnwrap(Assembly.GetExecutingAssembly().FullName, typeof(EventForwarder).FullName);
-            remoteForwarder.EventWritten += (s, e) => WriteEvent(e);
-
+            var remoteForwarder = (EventForwarder)domain.CreateInstanceAndUnwrap(
+                Assembly.GetExecutingAssembly().FullName,
+                typeof(EventForwarder).FullName,
+                false, BindingFlags.Default, null, new[] { receiver }, null, Array.Empty<object>());
 
             using var remoteDisposable = remote.Start();
+
+            // The in-proc version of the forwarder+component. 
+            //var localForwarder = new EventForwarder(receiver);
+            //var local = new Component();
             //using var localDisposable = local.Start();
 
             Console.WriteLine("Usage: [+|0][source]");
@@ -50,11 +57,11 @@ namespace TracingApp
                 switch (line[0])
                 {
                     case '+':
-                        localForwarder.Enable(sourceName);
+                        //localForwarder.Enable(sourceName);
                         remoteForwarder.Enable(sourceName);
                         break;
                     case '-':
-                        localForwarder.Disable(sourceName);
+                        //localForwarder.Disable(sourceName);
                         remoteForwarder.Disable(sourceName);
                         break;
                     default:
@@ -70,7 +77,6 @@ namespace TracingApp
             // NOTE: deserializing directly to the original event args is not really 
             // possible, since it doesn't have a public constructor, it receives an EventSource, etc.
             //OnEventWritten(JsonConvert.DeserializeObject<EventWrittenEventArgs>(payload, settings)!);
-
             OnEventWritten(JsonConvert.DeserializeObject<EventWrittenInfo>(payload));
         }
 
@@ -109,6 +115,24 @@ namespace TracingApp
                 // the app has written to the source.
                 if (args.EventId != 2)
                     return;
+
+
+                //// TODO: simulate local call for DiagnosticSource?
+                var source = new DiagnosticListener((string)args.Payload[0]);
+                //// NOTE: we could conceivable even turn the payload back into an anonymous
+                // type with the same properties received when serialized, so the handling 
+                // code can be the same as if it was all inproc too.
+
+                var payload = (IDictionary<string, object>)new ExpandoObject();
+                foreach (var item in ((IEnumerable<object>)args.Payload[2]).OfType<IDictionary<string, object>>())
+                {
+                    payload[(string)item["Key"]] = item["Value"];
+                }
+
+                // This is now pretty much exactly like the anonymous that would have been passed in.
+                dynamic data = payload;
+                source.Write((string)args.Payload[1], (object)data);
+
 
                 var arguments = string.Join(", ",
                     ((IEnumerable<object>)args.Payload[2]).OfType<IDictionary<string, object>>()

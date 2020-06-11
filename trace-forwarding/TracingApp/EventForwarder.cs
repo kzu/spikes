@@ -13,19 +13,18 @@ namespace TracingApp
         static readonly List<WeakReference> traceSources = (List<WeakReference>)
             typeof(TraceSource).GetField("tracesources", BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
 
-        public event EventHandler<string> EventWritten;
-
         readonly HashSet<string> enabledSources = new HashSet<string>();
         readonly List<DiagnosticListener> allListeners;
         readonly EventListener listener;
 
-        public EventForwarder()
+        public EventForwarder(IProgress<string> receiver)
         {
             allListeners = new List<DiagnosticListener>();
             DiagnosticListener.AllListeners.Subscribe(d => allListeners.Add(d));
 
             listener = new EventListener();
-            listener.EventWritten += OnEventWritten;
+            // Just serialize and pass-through to calling domain
+            listener.EventWritten += (sender, args) => receiver.Report(JsonConvert.SerializeObject(args));
         }
 
         public void Enable(string source)
@@ -74,30 +73,6 @@ namespace TracingApp
 
             if (traceSource != null)
                 traceSource.Switch.Level = SourceLevels.Information;
-        }
-
-        void OnEventWritten(object sender, EventWrittenEventArgs args)
-        {
-            // Payload has specific shape for this source
-            if (args.EventSource.Name == "Microsoft-Diagnostics-DiagnosticSource")
-            {
-                // For the DiagnosticSource bridge, we only care about Event events, which are the ones that 
-                // the app has written to the source.
-                if (args.EventId != 2)
-                    return;
-
-                EventWritten?.Invoke(this, JsonConvert.SerializeObject(args, Formatting.Indented));
-                //var arguments = string.Join(", ",
-                //    ((object[])args.Payload[2]).OfType<IDictionary<string, object>>()
-                //        .Select(dict => dict["Key"] + "=" + dict["Value"]));
-
-                //// The EventId isn't used at all in the DiagnosticSource API
-                //WriteLog($"{args.Payload[0]}: {args.Payload[1]}:{arguments}");
-            }
-            else
-            {
-                EventWritten?.Invoke(this, JsonConvert.SerializeObject(args, Formatting.Indented));
-            }
         }
     }
 }
