@@ -24,6 +24,7 @@ namespace TracingApp
 
             listener = new EventListener();
             // Just serialize and pass-through to calling domain
+            // TODO: see if we can leverage https://github.com/dotnet/runtime/blob/master/docs/design/features/raw-eventlistener.md somehow.
             listener.EventWritten += (sender, args) => receiver.Report(JsonConvert.SerializeObject(args));
         }
 
